@@ -50,6 +50,7 @@
 #include "config_server.h"
 #include "wifi_network.h"
 #include "dev_status.h"
+#include "waycan.h"
 
 /* Attributes State Machine */
 enum
@@ -64,6 +65,12 @@ enum
 //
     IDX_CHAR_C,
     IDX_CHAR_VAL_C,
+
+#ifdef CONFIG_WAYCAN_TELEMETRY
+    IDX_WAYCAN_CHAR,
+    IDX_WAYCAN_VALUE,
+    IDX_WAYCAN_CCC,
+#endif
 
     HRS_IDX_NB,
 };
@@ -209,6 +216,14 @@ static const uint8_t char_prop_read_write_notify   = ESP_GATT_CHAR_PROP_BIT_WRIT
 //static const uint8_t char_prop_read_write   = ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_READ;
 static const uint8_t heart_measurement_ccc[2]      = {0x00, 0x00};
 static const uint8_t char_value[20]                 = {0x11, 0x22, 0x33, 0x44};
+#ifdef CONFIG_WAYCAN_TELEMETRY
+// 06b45b3f-572e-47ef-b6db-5ad6c121676d, little-endian UUID bytes.
+static const uint8_t waycan_uuid[16] = {
+    0x6d, 0x67, 0x21, 0xc1, 0xd6, 0x5a, 0xdb, 0xb6,
+    0xef, 0x47, 0x2e, 0x57, 0x3f, 0x5b, 0xb4, 0x06
+};
+static uint8_t waycan_ccc[2];
+#endif
 #define CHAR_DECLARATION_SIZE       (sizeof(uint8_t))
 #define SVC_INST_ID                 0
 static uint16_t spp_mtu_size = 23;
@@ -221,7 +236,7 @@ static uint16_t ble_max_data_size = 20;
 static bool is_connected = false;
 static uint8_t test1[] = {0x66 ,0x33 ,0x22 ,0x11 ,0xBB ,0x00 ,0x00 ,0x00 ,0x11 ,0x00 ,0x00 ,0x00 ,0x33 ,0x00 ,0x00 ,0x00 ,0xA4 ,0x3C ,0xD9 ,0x49};
 /* Full Database Description - Used to add attributes into the database */
-static const esp_gatts_attr_db_t gatt_db[HRS_IDX_NB] =
+static esp_gatts_attr_db_t gatt_db[HRS_IDX_NB] =
 {
 	    // Service Declaration
 	    [IDX_SVC]        =
@@ -257,6 +272,21 @@ static const esp_gatts_attr_db_t gatt_db[HRS_IDX_NB] =
 		[IDX_CHAR_VAL_C]  =
 			{{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_16, (uint8_t *)&GATTS_CHAR_UUID_TEST_C, ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM,
 		  GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}},
+
+#ifdef CONFIG_WAYCAN_TELEMETRY
+    [IDX_WAYCAN_CHAR] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid,
+      ESP_GATT_PERM_READ, CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE,
+      (uint8_t *)&char_prop_read_write_notify}},
+    [IDX_WAYCAN_VALUE] =
+    {{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_128, (uint8_t *)waycan_uuid,
+      ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM,
+      WAYCAN_PACKET_SIZE, 0, NULL}},
+    [IDX_WAYCAN_CCC] =
+    {{ESP_GATT_RSP_BY_APP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM,
+      sizeof(waycan_ccc), sizeof(waycan_ccc), waycan_ccc}},
+#endif
 
 };
 
@@ -489,11 +519,41 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
             esp_ble_gap_set_device_name((const char*)dev_name);
             //generate a resolvable random address
             esp_ble_gap_config_local_privacy(true);
+#ifdef CONFIG_WAYCAN_TELEMETRY
+            gatt_db[IDX_CHAR_VAL_A].attr_control.auto_rsp =
+                waycan_enabled() ? ESP_GATT_RSP_BY_APP : ESP_GATT_AUTO_RSP;
+#endif
             esp_ble_gatts_create_attr_tab(gatt_db, gatts_if,
                                       HRS_IDX_NB, HEART_RATE_SVC_INST_ID);
             break;
         case ESP_GATTS_READ_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_READ_EVT");
+#ifdef CONFIG_WAYCAN_TELEMETRY
+            if (param->read.handle == profile_handle_table[IDX_WAYCAN_VALUE] ||
+                param->read.handle == profile_handle_table[IDX_WAYCAN_CCC] ||
+                (waycan_enabled() && param->read.handle == profile_handle_table[IDX_CHAR_VAL_A])) {
+                memset(&rsp, 0, sizeof(rsp));
+                rsp.attr_value.handle = param->read.handle;
+                esp_gatt_status_t status = ESP_GATT_OK;
+                if (param->read.offset != 0) {
+                    status = ESP_GATT_INVALID_OFFSET;
+                } else if (param->read.handle == profile_handle_table[IDX_CHAR_VAL_A]) {
+                    status = ESP_GATT_READ_NOT_PERMIT;
+                } else if (!waycan_enabled()) {
+                    status = ESP_GATT_READ_NOT_PERMIT;
+                } else if (param->read.handle == profile_handle_table[IDX_WAYCAN_CCC]) {
+                    rsp.attr_value.len = sizeof(waycan_ccc);
+                    memcpy(rsp.attr_value.value, waycan_ccc, sizeof(waycan_ccc));
+                } else if (waycan_status(rsp.attr_value.value)) {
+                    rsp.attr_value.len = WAYCAN_PACKET_SIZE;
+                } else {
+                    status = ESP_GATT_ERR_UNLIKELY;
+                }
+                esp_ble_gatts_send_response(gatts_if, param->read.conn_id,
+                    param->read.trans_id, status, &rsp);
+                break;
+            }
+#endif
             if(profile_handle_table[IDX_CHAR_VAL_C] == param->read.handle)
             {
             	memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
@@ -508,6 +568,34 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
         case ESP_GATTS_WRITE_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_WRITE_EVT, write value:");
             esp_log_buffer_hex(GATTS_TABLE_TAG, param->write.value, param->write.len);
+
+#ifdef CONFIG_WAYCAN_TELEMETRY
+            if (param->write.handle == profile_handle_table[IDX_WAYCAN_VALUE] ||
+                param->write.handle == profile_handle_table[IDX_WAYCAN_CCC]) {
+                esp_gatt_status_t status = ESP_GATT_OK;
+                if (!waycan_enabled()) status = ESP_GATT_WRITE_NOT_PERMIT;
+                else if (param->write.is_prep) status = ESP_GATT_REQ_NOT_SUPPORTED;
+                else if (param->write.offset != 0) status = ESP_GATT_INVALID_OFFSET;
+                else if (param->write.handle == profile_handle_table[IDX_WAYCAN_CCC]) {
+                    if (param->write.len != 2 || param->write.value[1] != 0 ||
+                        param->write.value[0] > 1) status = ESP_GATT_CCC_CFG_ERR;
+                    else {
+                        waycan_subscribe(param->write.value[0] == 1);
+                        memcpy(waycan_ccc, param->write.value, 2);
+                    }
+                } else if (!waycan_resume(param->write.value, param->write.len)) {
+                    status = ESP_GATT_OUT_OF_RANGE;
+                }
+                if (param->write.need_rsp) esp_ble_gatts_send_response(gatts_if,
+                    param->write.conn_id, param->write.trans_id, status, NULL);
+                break;
+            }
+            if (waycan_enabled() && param->write.handle == profile_handle_table[IDX_CHAR_VAL_A]) {
+                if (param->write.need_rsp) esp_ble_gatts_send_response(gatts_if,
+                    param->write.conn_id, param->write.trans_id, ESP_GATT_WRITE_NOT_PERMIT, NULL);
+                break;
+            }
+#endif
 
             if(profile_handle_table[IDX_CHAR_VAL_A] == param->write.handle)
             {
@@ -557,6 +645,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
             break;
         case ESP_GATTS_CONNECT_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONNECT_EVT");
+#ifdef CONFIG_WAYCAN_TELEMETRY
+            waycan_subscribe(false);
+            memset(waycan_ccc, 0, sizeof(waycan_ccc));
+            if (waycan_enabled()) xEventGroupClearBits(s_ble_event_group, BLE_CONGEST_BIT);
+#endif
         	config_server_stop();
         	wifi_network_deinit();
 
@@ -570,6 +663,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
             break;
         case ESP_GATTS_DISCONNECT_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_DISCONNECT_EVT, disconnect reason 0x%x", param->disconnect.reason);
+#ifdef CONFIG_WAYCAN_TELEMETRY
+            waycan_subscribe(false);
+            memset(waycan_ccc, 0, sizeof(waycan_ccc));
+#endif
 //            wifi_network_restart();
 //        	config_server_restart();
             is_connected = false;
@@ -650,6 +747,16 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
 
 
+#ifdef CONFIG_WAYCAN_TELEMETRY
+static bool send_waycan_packet(uint8_t *packet)
+{
+    if (!is_connected || (xEventGroupGetBits(s_ble_event_group) & BLE_CONGEST_BIT) ||
+        esp_ble_get_cur_sendable_packets_num(spp_conn_id) == 0) return false;
+    return esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
+        profile_handle_table[IDX_WAYCAN_VALUE], WAYCAN_PACKET_SIZE, packet, false) == ESP_OK;
+}
+#endif
+
 static void ble_task(void *pvParameters)
 {
 	static xdev_buffer tx_buffer;
@@ -660,6 +767,13 @@ static void ble_task(void *pvParameters)
 //	static int64_t send_time = 0;
 	while(1)
 	{
+#ifdef CONFIG_WAYCAN_TELEMETRY
+        if (waycan_enabled()) {
+            waycan_pump(send_waycan_packet);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+#endif
 		//		ESP_LOGI(GATTS_TABLE_TAG, "wait BLE_CONNECTED_BIT");
 				xEventGroupWaitBits(s_ble_event_group,
 									BLE_CONNECTED_BIT,
@@ -926,6 +1040,11 @@ void ble_init(QueueHandle_t *xTXp_Queue, QueueHandle_t *xRXp_Queue, uint8_t conn
 
 void ble_disable(void)
 {
+#ifdef CONFIG_WAYCAN_TELEMETRY
+    // The stack need not deliver a disconnect event before deinitialization.
+    waycan_subscribe(false);
+    memset(waycan_ccc, 0, sizeof(waycan_ccc));
+#endif
 	esp_bluedroid_disable();
 	esp_bluedroid_deinit();
 	esp_bt_controller_disable();

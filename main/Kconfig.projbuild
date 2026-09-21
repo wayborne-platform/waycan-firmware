@@ -12,3 +12,24 @@ config ESP_WIFI_PASSWORD
     help
 	WiFi password (WPA or WPA2) for the example to use.
 endmenu
+
+menu "WayCAN telemetry (experimental)"
+config WAYCAN_TELEMETRY
+    bool "Enable exclusive buffered BLE telemetry in ELM327 mode"
+    default n
+    depends on IDF_TARGET_ESP32C3
+    help
+        Bench prototype for WiCAN-OBD v3.00. Replaces host-driven ELM327
+        requests with speed, RPM, and throttle sampling. Requires BLE and
+        voltage-based sleep enabled, and MQTT disabled. Stock mode remains
+        available by building with this option off. Not vehicle validated.
+
+config WAYCAN_OBD_PROTOCOL
+    int "OBD CAN protocol (6/7 = 500 kbit, 8/9 = 250 kbit)"
+    depends on WAYCAN_TELEMETRY
+    range 6 9
+    default 6
+    help
+        6 and 8 use 11-bit IDs; 7 and 9 use 29-bit IDs.
+        Set this to the protocol already verified for the target vehicle.
+endmenu

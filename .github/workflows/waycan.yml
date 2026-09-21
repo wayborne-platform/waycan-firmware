@@ -1,0 +1,53 @@
+name: WayCAN firmware
+
+on:
+  push:
+    paths:
+      - 'main/**'
+      - 'components/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig*'
+      - '*partitions*.csv'
+      - 'dependencies.lock'
+      - 'tests/**'
+      - 'tools/build-waycan.sh'
+      - '.github/workflows/waycan.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/run.sh
+
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.2
+    strategy:
+      matrix:
+        mode: [stock, telemetry]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build ESP32-C3 firmware
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          bash tools/build-waycan.sh "${{ matrix.mode }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waycan-${{ matrix.mode }}-bench-only
+          path: |
+            build/${{ matrix.mode }}/*.bin
+            build/${{ matrix.mode }}/*.elf
+            build/${{ matrix.mode }}/sdkconfig
+            build/${{ matrix.mode }}/flasher_args.json
+            build/${{ matrix.mode }}/bootloader/bootloader.bin
+            build/${{ matrix.mode }}/partition_table/partition-table.bin

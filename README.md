@@ -1,3 +1,18 @@
+# WayCAN firmware
+
+Experimental Wayborne fork of MeatPi WiCAN for original WiCAN-OBD hardware v3.00.
+The default build retains stock operation. An opt-in build adds autonomous OBD
+sampling, timestamps, and buffered BLE replay. It is not vehicle validated and
+does not yet work with the Wayborne mobile app's existing ELM327 client.
+
+- [Build and bench testing](WAYCAN-BUILD.md)
+- [BLE protocol and limitations](WAYCAN-PROTOCOL.md)
+
+Upstream firmware code at the fork point matches release `v4.21`.
+This fork retains the upstream GPL license and attribution below.
+
+---
+
 <img src="https://github.com/slimelec/ollie-hw/blob/master/images/mpi_logo.png" width=300>
 
 [www.meatpi.com](https://www.meatpi.com)

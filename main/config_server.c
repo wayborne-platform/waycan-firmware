@@ -71,6 +71,7 @@
 #include "can.h"
 #include "ble.h"
 #include "sleep_mode.h"
+#include "waycan.h"
 #include "autopid.h"
 #include "wc_mdns.h"
 #include "hw_config.h"
@@ -1408,7 +1409,7 @@ static esp_err_t scan_available_pids_handler(httpd_req_t *req)
     char param[32];
     uint8_t protocol_num = 6; // Default protocol
 
-    if(config_server_protocol() != AUTO_PID)
+    if(waycan_enabled() || config_server_protocol() != AUTO_PID)
     {
         httpd_resp_set_type(req, "application/json");
         const char *resp_str = "{\"text\":\"Set protocol to AutoPid and reboot to be able to scan\"}";
@@ -2738,4 +2739,3 @@ void config_server_set_ble_config(uint8_t b)
 	free((void *)resp_str);
     cJSON_Delete(root);
 }
-

@@ -53,6 +53,7 @@
 #include "esp_mac.h"
 #include "ftp.h"
 #include "autopid.h"
+#include "waycan.h"
 #include "wc_mdns.h"
 #include "hw_config.h"
 #include "dev_status.h"
@@ -173,6 +174,9 @@ static void can_tx_task(void *pvParameters)
 		memset(ucTCP_RX_Buffer.ucElement,0, DEV_BUFFER_LENGTH);
 		xQueueReceive(xMsg_Rx_Queue, &ucTCP_RX_Buffer, portMAX_DELAY);
 
+		// This mode owns the diagnostic channel, including WebSocket CAN commands.
+		if (waycan_enabled()) continue;
+
 		dev_status_wait_for_bits(DEV_AWAKE_BIT, portMAX_DELAY);
 
 		ESP_LOGI(TAG, "----------");
@@ -289,7 +293,7 @@ static void can_rx_task(void *pvParameters)
 				}
         	}
         	//TODO: optimize, useless ifs
-			if(tcp_port_open() || ble_connected() || project_hardware_rev == WICAN_USB_V100 || mqtt_connected() || protocol == AUTO_PID )
+			if(tcp_port_open() || ble_connected() || project_hardware_rev == WICAN_USB_V100 || mqtt_connected() || protocol == AUTO_PID || waycan_enabled())
 			{
 				memset(ucTCP_TX_Buffer.ucElement, 0, sizeof(ucTCP_TX_Buffer.ucElement));
 				ucTCP_TX_Buffer.usLen = 0;
@@ -435,6 +439,7 @@ void app_main(void)
 	}
 
 	protocol = config_server_protocol();
+	waycan_init();
 //	protocol = OBD_ELM327;
 
 	if(protocol == REALDASH)
@@ -464,7 +469,11 @@ void app_main(void)
 		can_enable();
 		xmsg_obd_rx_queue = xQueueCreate(32, sizeof( twai_message_t) );
 		
-		if(config_server_mqtt_en_config() && config_server_mqtt_elm327_log())
+		if(waycan_enabled())
+		{
+			elm327_init(&waycan_response, &xmsg_obd_rx_queue, NULL);
+		}
+		else if(config_server_mqtt_en_config() && config_server_mqtt_elm327_log())
 		{
 			mqtt_elm327_log_en = config_server_mqtt_elm327_log();
 			elm327_init(&send_to_host, &xmsg_obd_rx_queue, log_can_to_mqtt);
@@ -484,7 +493,7 @@ void app_main(void)
 		autopid_init((char*)&uid[0]);
 	}
 
-	if(config_server_mqtt_en_config())
+	if(config_server_mqtt_en_config() && !waycan_enabled())
 	{
 		can_set_bitrate(can_datarate);
 		xmsg_mqtt_rx_queue = xQueueCreate(32, sizeof(mqtt_can_message_t) );
@@ -509,7 +518,7 @@ void app_main(void)
 		port = 3333;
 	}
 
-	if(protocol != AUTO_PID)
+	if(protocol != AUTO_PID && !waycan_enabled())
 	{
 		if(config_server_get_port_type() == UDP_PORT)
 		{
@@ -605,6 +614,7 @@ void app_main(void)
     	sleep_mode_init(0, 13.1f);
     }
 
+    waycan_start();
     gpio_set_level(PWR_LED_GPIO_NUM, 1);
     
 
@@ -631,4 +641,3 @@ void app_main(void)
 	// debug_logs_init(dbg_net_ready);
 	// DEBUG_LOGI("INIT", "debug_logs initialized (UDP %s:%d) waiting for WiFi", DEBUG_LOGS_UDP_DEST_IP, DEBUG_LOGS_UDP_PORT);`
 }
-
